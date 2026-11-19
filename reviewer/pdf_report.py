@@ -131,7 +131,7 @@ def _theme_chart(themes, title, color):
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     shares = [100 * t['share'] for t in themes]
     ax.barh([t['name'][:60] for t in themes], shares, color=color, height=0.6)
-    for i, (s, t) in enumerate(zip(shares, themes)):
+    for i, (s, t) in enumerate(zip(shares, themes, strict=True)):
         ax.text(s + 0.4, i, f"{s:.0f}% ({t['count']})", va='center', fontsize=7, color='#52606d')
     ax.set_xlabel("% of all reviews", fontsize=7, color='#7b8794')
     ax.set_title(title, fontsize=9, loc='left', color='#1f2933')

@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 import math
 import re
 
-import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer
 
 CRITICAL_MAX_SCORE = 2
@@ -105,7 +104,7 @@ def _sentence_mentions(sentence, phrase):
 def _pick_quote(group_df, phrase):
     """Quote the sentence that mentions the theme, from the most upvoted review."""
     best = None
-    for content, thumbs in zip(group_df['content'].fillna(''), group_df['thumbsUpCount']):
+    for content, thumbs in zip(group_df['content'].fillna(''), group_df['thumbsUpCount'], strict=True):
         for sentence in re.split(r'(?<=[.!?])\s+|\n+', str(content)):
             sentence = sentence.strip()
             if len(sentence) < QUOTE_MIN_CHARS or not _sentence_mentions(sentence, phrase):

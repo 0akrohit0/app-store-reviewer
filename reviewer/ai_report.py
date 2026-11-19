@@ -26,6 +26,8 @@ import anthropic
 import pandas as pd
 from pydantic import BaseModel, ValidationError
 
+from reviewer.summary import CRITICAL_MAX_SCORE, FAVOURABLE_MIN_SCORE
+
 MODEL = "claude-opus-5-5"
 # Opus 5.5 can't disable thinking; effort is the cost/quality control
 TAXONOMY_EFFORT = "medium"
@@ -37,8 +39,6 @@ TAXONOMY_SAMPLE_SIZE = 400
 CHUNK_SIZE = 100
 MAX_PARALLEL_REQUESTS = 4
 QUOTES_PER_THEME = 6
-CRITICAL_MAX_SCORE = 2
-FAVOURABLE_MIN_SCORE = 4
 
 # USD per million tokens for MODEL (cache writes are 1.25x input with the 5-minute TTL)
 PRICE_INPUT = 4.00
