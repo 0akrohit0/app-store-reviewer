@@ -75,8 +75,7 @@ Open:
 2. **If one classification chunk fails, the other parallel chunks still run and bill**, and all partial work is lost. Fail fast and keep completed steps.
 3. **Feature-request detection (`detect_feature_requests`) is very noisy**: generic words like `need`, `want`, `update` and `feature` match most complaints. The AI report's request themes are the reliable version.
 4. The lang/country choices are hard-coded to 5 Western locales, but most saved data is for Indian apps (`in` is not offered).
-5. **`data/` (~24 MB) is still tracked in git.** The saved reviews contain real user names and avatar URLs (PII). `.gitignore` ignores new output, but removing the existing files (`git rm -r --cached data/`) is an owner decision. Note that pulling that commit deletes the files from collaborators' working copies.
-6. The PDF font (DejaVu) can't draw emoji or Indic scripts. They're dropped from the PDF only.
+5. The PDF font (DejaVu) can't draw emoji or Indic scripts. They're dropped from the PDF only.
 
 Fixed (keep fixed):
 - The dashboard is kept in `st.session_state`, so widget reruns don't wipe it. Keep any new tab or widget inside the session-state render block.
@@ -84,6 +83,7 @@ Fixed (keep fixed):
 - Sentiment `pd.cut` uses `include_lowest=True`, so a score of -1.0 is Negative.
 - The weak keyword "App Review Summary", unused imports, `seaborn`, and the POS-tagger download were removed.
 - `requirements.txt` pins versions verified together on Python 3.13 (`.python-version`).
+- `data/` is local only and untracked: scraped reviews contain PII. Never commit it, and never use `git add -f` on it. Earlier commits in history still contain the old files.
 
 ## Target structure (move toward this incrementally)
 

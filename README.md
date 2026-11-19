@@ -65,7 +65,7 @@ Claude (`claude-opus-5-5`) proposes themes from a sample of reviews, then tags *
 ## Your data
 
 - Fetched reviews are saved to `data/<app_id>_<timestamp>.json` and `.csv`. AI reports go in `data/reports/`.
-- Reviews contain reviewers' public names and avatar links. New files in `data/` are gitignored; keep it that way and don't commit scraped data.
+- `data/` is **local only** and gitignored. Reviews contain reviewers' public names and avatar links, so never commit scraped data. A fresh clone starts with an empty `data/`, and it fills up as you fetch.
 - With the AI Report, review text is sent to the Anthropic API.
 
 ## Project structure
@@ -77,7 +77,7 @@ reviewer/
   ai_report.py          Claude pipeline: themes → tagging → stats → written report
   pdf_report.py         Builds the PDF (reportlab + matplotlib charts)
 tests/                  pytest suite (uses a fake Claude client, so it never calls the API)
-data/                   Fetched reviews and saved reports (new files are gitignored)
+data/                   Fetched reviews and saved reports (local only, gitignored; created on first fetch)
 requirements.txt        App dependencies (pinned)
 requirements-dev.txt    + pytest and ruff
 .env.example            Template for your API key
