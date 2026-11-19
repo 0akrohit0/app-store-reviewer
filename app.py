@@ -27,7 +27,14 @@ from wordcloud import WordCloud
 import plotly.graph_objects as go
 import ssl
 import certifi
+import anthropic
+from dotenv import load_dotenv
 from reviewer.summary import build_executive_summary, format_headline
+from reviewer.ai_report import AIReport, MODEL as AI_MODEL, ReportError, estimate_cost, generate_report, make_client
+from reviewer.pdf_report import build_pdf
+
+# Pick up ANTHROPIC_API_KEY from a local .env file (gitignored)
+load_dotenv()
 
 # Fix SSL certificate issues
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -332,6 +339,162 @@ Based on {insights['total_reviews']} reviews, your app has an average rating of 
     
     return summary
 
+# Function to get the Anthropic API key from Streamlit secrets, if configured
+def get_api_key():
+    try:
+        return st.secrets.get("ANTHROPIC_API_KEY")
+    except Exception:  # no secrets.toml
+        return None
+
+# Saved AI reports live next to the scraped data so reopening a dataset doesn't re-bill
+def ai_report_path(json_file):
+    return os.path.join("data", "reports", os.path.basename(json_file).replace(".json", "_ai_report.json"))
+
+def load_saved_ai_report(json_file):
+    path = ai_report_path(json_file)
+    if os.path.exists(path):
+        with open(path) as f:
+            return AIReport.from_json(f.read())
+    return None
+
+def run_ai_report(raw_df, app_id, context, json_file):
+    progress_bar = st.progress(0.0, text="Starting…")
+    try:
+        client = make_client(get_api_key())
+        report = generate_report(raw_df, app_id, context, client=client,
+                                 progress=lambda message, fraction: progress_bar.progress(fraction, text=message))
+    except ReportError as e:
+        st.error(str(e))
+        return None
+    except anthropic.AuthenticationError:
+        st.error("The Anthropic API key was rejected. Check ANTHROPIC_API_KEY.")
+        return None
+    except anthropic.RateLimitError:
+        st.error("Hit the Anthropic API rate limit. Wait a minute and try again.")
+        return None
+    except anthropic.APIStatusError as e:
+        st.error(f"Anthropic API error ({e.status_code}): {e.message}")
+        return None
+    except anthropic.APIConnectionError:
+        st.error("Couldn't reach the Anthropic API. Check your internet connection.")
+        return None
+    except anthropic.AnthropicError as e:
+        # e.g. no credentials configured at all
+        st.error(f"Couldn't start the Anthropic client: {e}. Set ANTHROPIC_API_KEY in your environment "
+                 "or in .streamlit/secrets.toml.")
+        return None
+    finally:
+        progress_bar.empty()
+
+    path = ai_report_path(json_file)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(report.to_json())
+    return report
+
+def render_ai_report_tab(raw_df, app_id, json_file):
+    state = st.session_state.get('ai_report')
+    if not state or state['source'] != json_file:
+        saved = load_saved_ai_report(json_file)
+        state = {'source': json_file, 'report': saved, 'pdf': build_pdf(saved) if saved else None}
+        st.session_state['ai_report'] = state
+    report = state['report']
+
+    if report is None:
+        st.subheader("🤖 AI Report")
+        st.markdown(
+            "Claude reads every review, groups them into themes, and writes a PM report: an executive summary, "
+            "prioritised issues with exact counts and trends, deep-dives with recommendations, what users like, "
+            "and feature requests. You get it here and as a PDF."
+        )
+        context = st.text_area(
+            "Context for the analysis (optional)",
+            placeholder="e.g. Reviewers are delivery partners (drivers). I own driver onboarding and earnings. "
+                        "What should we fix first?",
+        )
+        estimate = estimate_cost(raw_df)
+        st.caption(f"Estimated cost: about **${estimate:.2f}** for {len(raw_df)} reviews with {AI_MODEL}. "
+                   "Takes 1–3 minutes.")
+        if st.button("Generate AI report", type="primary"):
+            report = run_ai_report(raw_df, app_id, context, json_file)
+            if report:
+                st.session_state['ai_report'] = {'source': json_file, 'report': report, 'pdf': build_pdf(report)}
+                st.rerun()
+        return
+
+    syn = report.synthesis
+    ov = report.overview
+    top_col, button_col = st.columns([4, 1])
+    with top_col:
+        st.subheader(f"🤖 {syn['headline']}")
+        st.caption(f"Generated {report.generated_at} with {report.model} · {ov['total_reviews']} reviews "
+                   f"({ov['date_from']} to {ov['date_to']}) · cost ${report.usage.get('cost_usd', 0):.2f}")
+    with button_col:
+        st.download_button("📄 Download PDF", data=state['pdf'], type="primary",
+                           file_name=f"{app_id}_review_insights.pdf", mime="application/pdf")
+        if st.button("Regenerate"):
+            if os.path.exists(ai_report_path(json_file)):
+                os.remove(ai_report_path(json_file))
+            st.session_state.pop('ai_report', None)
+            st.rerun()
+
+    cols = st.columns(5)
+    cols[0].metric("Reviews", ov['total_reviews'])
+    cols[1].metric("Avg rating", f"{ov['avg_rating']:.1f}★")
+    cols[2].metric("Critical (1–2★)", f"{ov['critical_share']:.0%}")
+    cols[3].metric("Favourable (4–5★)", f"{ov['favourable_share']:.0%}")
+    cols[4].metric("Dev reply rate", f"{ov['developer_reply_rate']:.0%}")
+
+    st.markdown("#### Executive summary")
+    st.markdown(syn['executive_summary'])
+    st.markdown('\n'.join(f"- {t}" for t in syn['key_takeaways']))
+
+    st.markdown("#### What to work on")
+    priority_rows = []
+    for p in syn['priorities']:
+        theme = report.theme(p['theme_id'])
+        if theme:
+            priority_rows.append({
+                'Priority': p['priority'], 'Issue': theme['name'],
+                'Reviews': f"{theme['count']} ({theme['share']:.0%})",
+                'Of 1–2★': f"{theme['share_of_critical']:.0%}", 'Upvotes': theme['upvotes'],
+                'Trend': f"{theme['earlier_share']:.0%} → {theme['recent_share']:.0%}",
+                'Why': p['rationale'],
+            })
+    st.dataframe(pd.DataFrame(priority_rows), hide_index=True, use_container_width=True)
+    st.caption(f"Trend compares the share of reviews before and after {ov['trend_cutoff']} ({ov['trend_window']}).")
+
+    st.markdown("#### Deep dives")
+    for dive in syn['deep_dives']:
+        theme = report.theme(dive['theme_id'])
+        with st.expander(f"{dive['headline']} · {theme['count']} reviews"):
+            st.markdown(f"**What's happening:** {dive['what_is_happening']}")
+            st.markdown(f"**Impact:** {dive['user_impact']}")
+            st.markdown("**Likely root causes:**\n" + '\n'.join(f"- {c}" for c in dive['likely_root_causes']))
+            st.markdown("**Recommendations:**\n" + '\n'.join(
+                f"- {r['action']} *(impact: {r['impact']}, effort: {r['effort']})*" for r in dive['recommendations']))
+            st.markdown(f"**Metric to track:** {dive['metric_to_track']}")
+            quotes = {q['rid']: q for q in theme['quotes']}
+            for rid in dive['evidence_review_ids'][:3]:
+                if rid in quotes:
+                    q = quotes[rid]
+                    st.caption(f"“{q['text']}” — {q['score']}★ · 👍 {q['thumbs']} · {q['date']}")
+
+    like_col, request_col = st.columns(2)
+    with like_col:
+        st.markdown("#### 🟢 What users like")
+        st.markdown(syn['what_users_like'])
+        for theme in [t for t in report.themes if t['kind'] == 'like']:
+            st.markdown(f"- **{theme['name']}**: {theme['count']} reviews ({theme['share_of_favourable']:.0%} of 4–5★)")
+    with request_col:
+        st.markdown("#### 💡 Feature requests")
+        st.markdown(syn['feature_requests_summary'])
+        for theme in [t for t in report.themes if t['kind'] == 'request']:
+            st.markdown(f"- **{theme['name']}**: {theme['count']} reviews · 👍 {theme['upvotes']}")
+
+    st.markdown("#### ⚠️ Risks and watch-outs")
+    st.markdown('\n'.join(f"- {r}" for r in syn['risks_and_watchouts']))
+
 # Main app logic
 # Fetch + analysis results are kept in session_state so the dashboard survives
 # reruns triggered by widget interactions (e.g. the Detailed Reviews filters).
@@ -389,8 +552,12 @@ if 'analysis' in st.session_state:
     st.header("📊 Analysis Dashboard")
     
     # Create tabs for different views
-    tab0, tab1, tab2, tab3, tab4 = st.tabs(["Summary", "Overview", "Sentiment Analysis", "Key Phrases", "Detailed Reviews"])
-    
+    ai_tab, tab0, tab1, tab2, tab3, tab4 = st.tabs(
+        ["🤖 AI Report", "Summary", "Overview", "Sentiment Analysis", "Key Phrases", "Detailed Reviews"])
+
+    with ai_tab:
+        render_ai_report_tab(raw_df, analysis['app_id'], analysis['json_file'])
+
     with tab0:
         st.subheader("🧭 Executive Summary")
         exec_summary = build_executive_summary(df)
