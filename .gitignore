@@ -1,0 +1,13 @@
+# Scraped review output (contains user PII)
+data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
