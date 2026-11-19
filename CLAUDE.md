@@ -17,7 +17,8 @@ Guidance for Claude (and humans) working in this repository.
   - Themes are 1–3 word phrases that are much more common in one group than the other, ranked by reach (upvotes dampened) × distinctiveness.
   - Overlapping themes are merged, and each theme is quoted with the sentence that mentions it.
   - Groups with fewer than 5 reviews get no themes.
-- **Display**: five tabs: Summary (executive summary first), Overview (rating histogram/trend), Sentiment, Key Phrases (word clouds), Detailed Reviews (filters).
+- **AI Report** (`reviewer/ai_report.py` + `reviewer/pdf_report.py`, Claude API): the PM-facing report, in the app and as a downloadable PDF. See "AI report pipeline" below.
+- **Display**: six tabs: 🤖 AI Report, Summary (offline executive summary), Overview (rating histogram/trend), Sentiment, Key Phrases (word clouds), Detailed Reviews (filters).
 
 Status: MVP. Most code is still in `app.py` (a top-to-bottom Streamlit script). `reviewer/` is the start of the extracted, Streamlit-free logic, tested under `tests/`. There is no linting and no CI yet.
 
@@ -27,8 +28,10 @@ Status: MVP. Most code is still in `app.py` (a top-to-bottom Streamlit script). 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt   # app deps + pytest
 streamlit run app.py            # http://localhost:8501
-pytest                          # unit tests (config in pyproject.toml)
+pytest                          # unit tests (config in pyproject.toml); never call the real API
 ```
+
+The AI Report needs Anthropic credentials: `ANTHROPIC_API_KEY` in a `.env` file, in the environment, or in `.streamlit/secrets.toml` (`.env` and secrets are gitignored). A run costs roughly $1–2 per 1000 reviews, and the app shows an estimate before running.
 
 On first run, NLTK downloads `vader_lexicon`, `punkt`, `stopwords`, `wordnet` and `averaged_perceptron_tagger` (cached via `st.cache_resource`), so the machine needs network access.
 
@@ -45,6 +48,22 @@ On first run, NLTK downloads `vader_lexicon`, `punkt`, `stopwords`, `wordnet` an
 | UI | `if 'analysis' in st.session_state:` renders all tabs from session state, so widget reruns keep the dashboard |
 
 Review record schema (from the scraper, and also the CSV columns): `reviewId, userName, userImage, content, score, thumbsUpCount, reviewCreatedVersion, at, replyContent, repliedAt`. Analysis adds the columns `sentiment_score, sentiment, processed_text, theme_text, is_feature_request`. `theme_text` is the same as `processed_text` but keeps the negations not/no/nor ("not working"), and the executive summary uses it.
+
+### AI report pipeline (`reviewer/ai_report.py`)
+
+`generate_report(df, app_id, context, client)` returns an `AIReport`, which serializes to JSON and is saved as `data/reports/<dataset>_ai_report.json` so reopening a dataset doesn't re-bill:
+1. `discover_taxonomy`: Claude reads a sample (top-upvoted plus random) and proposes issue, like and request themes.
+2. `classify_reviews`: every review is tagged with theme ids in chunks of `CHUNK_SIZE`, in parallel. The taxonomy is in a **cached** system prompt, and the first chunk runs alone to write the cache.
+3. `compute_stats`: **all numbers are computed in Python** (counts, shares, upvotes, trend, quotes). Never let the model produce numbers that end up in the report.
+4. `synthesize`: Claude writes the summary, priorities and deep-dives from the stats, and cites evidence by review id. Ids and theme ids are validated against the data, and quotes are filled in verbatim.
+
+Rules:
+- Every call goes through `_call()`: `claude-opus-5-5`, streaming, structured output via Pydantic schemas, effort set per step, and server-side `fallbacks="default"`. It raises `ReportError` on refusal, truncation or invalid output.
+- Prices and the model ID are constants at the top of the file. Update them together.
+- Prompt changes alter report outputs. Check them on a real dataset, and keep the system prompts byte-stable so caching keeps working (no timestamps or per-run values in `system`).
+- `tests/test_ai_report.py` has a `FakeClient` that answers by schema. Extend it rather than hitting the API in tests.
+
+`reviewer/pdf_report.py`: `build_pdf(report)` returns PDF bytes (reportlab, DejaVu font from matplotlib, matplotlib charts). Characters the font can't draw (emoji, Indic scripts) are dropped from the PDF only.
 
 `reviewer/summary.py`: `build_executive_summary(df)` returns an `ExecutiveSummary` with `issues` and `likes` lists of `Theme`. `format_headline()` turns it into the one-paragraph markdown headline. The tunables are module constants at the top of the file (`GENERIC_WORDS`, `MIN_LIFT`, `MIN_GROUP_SIZE`, …). After changing them, check the output on a few files in `data/`, not just the unit tests.
 
@@ -67,7 +86,9 @@ Separate pure logic from Streamlit so the logic can be tested without a browser:
 ```
 app.py                 # Streamlit UI only: widgets, layout, session_state
 reviewer/
-  summary.py           # ✅ executive summary (issues / likes themes)
+  summary.py           # ✅ offline executive summary (issues / likes themes)
+  ai_report.py         # ✅ Claude-powered PM report pipeline
+  pdf_report.py        # ✅ PDF rendering of the AI report
   scraper.py           # fetch (with pagination), returns list[dict]
   storage.py           # save/load JSON+CSV; load previously saved runs
   analysis.py          # sentiment, preprocessing, feature requests, keywords (pure, DataFrame in → DataFrame out)
@@ -101,5 +122,5 @@ Rules for the refactor:
 - **No silent behavior changes**: if a change alters outputs (sentiment labels, counts, file names or formats in `data/`), call it out explicitly in the PR description.
 - **Don't touch `data/`**: it's generated output. Never edit, regenerate or bulk-delete it without being asked.
 - **Destructive or outward-facing actions** (force-push, deleting files, pushing, publishing) need explicit confirmation.
-- **LLM features**: if you add LLM-based summarization or classification (a natural next step beyond VADER and the keyword regex), keep the model ID and prompt in one module and read the API key from env/secrets. Batch reviews to control cost, cache results by `reviewId`, and keep the existing VADER path as an offline fallback.
+- **LLM features**: follow the AI report pipeline's pattern. Keep the model, prompts and prices in one module, read the API key from env/secrets, put numbers in code and wording in the model, validate every id the model returns, and keep an offline path (`summary.py`) working without a key. Get approval before running anything that spends API credits.
 - **Keep this file current**: when a known issue is fixed, or the structure, commands or conventions change, update CLAUDE.md in the same PR.
