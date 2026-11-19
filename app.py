@@ -62,7 +62,7 @@ st.title("📱 Play Store Reviews Analyzer")
 # App configuration
 with st.sidebar:
     st.header("App Configuration")
-    app_id = st.text_input("Play Store App ID", placeholder="com.example.app")
+    app_id = st.text_input("Play Store App ID", placeholder="com.example.app").strip()
     
     count = st.number_input("Number of reviews to fetch", min_value=10, max_value=10000, value=100)
     
@@ -339,7 +339,16 @@ if fetch_button and app_id:
     with st.spinner("Fetching reviews from Play Store..."):
         reviews_data = scrape_reviews(app_id, count, lang, country, sort_order)
 
-    if reviews_data:
+    if not reviews_data:
+        # Unknown app IDs return no reviews rather than raising, so say so explicitly
+        # and drop the previous app's results so they aren't mistaken for this one
+        st.session_state.pop('analysis', None)
+        if reviews_data is not None:
+            st.warning(
+                f"No reviews found for **{app_id}** in {lang}/{country}. Check the app ID "
+                "(e.g. com.example.app) or try another language/country."
+            )
+    else:
         # Save reviews locally
         json_file, csv_file = save_reviews(reviews_data, app_id)
 
