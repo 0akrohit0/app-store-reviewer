@@ -20,15 +20,16 @@ Guidance for Claude (and humans) working in this repository.
 - **AI Report** (`reviewer/ai_report.py` + `reviewer/pdf_report.py`, Claude API): the PM-facing report, in the app and as a downloadable PDF. See "AI report pipeline" below.
 - **Display**: six tabs: 🤖 AI Report, Summary (offline executive summary), Overview (rating histogram/trend), Sentiment, Key Phrases (word clouds), Detailed Reviews (filters).
 
-Status: MVP. Most code is still in `app.py` (a top-to-bottom Streamlit script). `reviewer/` is the start of the extracted, Streamlit-free logic, tested under `tests/`. There is no linting and no CI yet.
+Status: MVP. Most code is still in `app.py` (a top-to-bottom Streamlit script). `reviewer/` is the start of the extracted, Streamlit-free logic, tested under `tests/`. Linting is `ruff` (config in `pyproject.toml`). There is no CI yet.
 
 ## Commands
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt   # app deps + pytest
+pip install -r requirements-dev.txt   # app deps + pytest + ruff
 streamlit run app.py            # http://localhost:8501
 pytest                          # unit tests (config in pyproject.toml); never call the real API
+ruff check .                    # lint
 ```
 
 The AI Report needs Anthropic credentials: `ANTHROPIC_API_KEY` in a `.env` file, in the environment, or in `.streamlit/secrets.toml` (`.env` and secrets are gitignored). A run costs roughly $1–2 per 1000 reviews, and the app shows an estimate before running.
@@ -69,15 +70,20 @@ Rules:
 
 ## Known issues / tech debt (fix deliberately, not opportunistically)
 
-1. ~~The dashboard disappears when you use a filter.~~ Fixed: results now live in `st.session_state`. Keep any new tab or widget inside the session-state render block.
-2. **TLS verification is disabled globally** (`ssl._create_default_https_context = ssl._create_unverified_context`). `certifi` is imported but unused. Replace this with proper certifi-based context rather than leaving verification off.
-3. **Sentiment binning edge case**: `pd.cut(bins=[-1, -0.1, 0.1, 1])` is left-exclusive, so a compound score of exactly `-1.0` becomes `NaN`. Use `include_lowest=True`.
-4. **Feature-request detection is very noisy**: generic words like `need`, `want`, `update` and `feature` match most complaints.
-5. Unused imports: `numpy`, `matplotlib`, `seaborn`, `go`, `certifi`. A bare `except:` in `extract_keywords` swallows all errors.
-6. The lang/country choices are hard-coded to 5 Western locales, but the saved data is mostly Indian apps (`in` is not offered).
-7. **`data/` (~24 MB) and `.DS_Store` are still tracked in git.** The saved reviews contain real user names and avatar URLs (PII). `.gitignore` now ignores new output, but the existing files need `git rm --cached` (an owner decision).
-8. **The pinned `requirements.txt` does not install on Python 3.13** (the 2023 pins fail to build). The current code was verified with the latest releases (Streamlit 1.67). Re-pin and record the Python version in `.python-version`. Streamlit also warns that `use_container_width` is deprecated; switch to `width='stretch'`.
-9. The old keyword "App Review Summary" (`generate_summary`) is weak: on a 1.4★ app it lists "ad" under both likes and dislikes. The executive summary supersedes it; consider removing it.
+Open:
+1. **The AI report hasn't been verified against the live API yet** (the account had no credit at the time). The first real run should be checked end to end, including the PDF.
+2. **If one classification chunk fails, the other parallel chunks still run and bill**, and all partial work is lost. Fail fast and keep completed steps.
+3. **Feature-request detection (`detect_feature_requests`) is very noisy**: generic words like `need`, `want`, `update` and `feature` match most complaints. The AI report's request themes are the reliable version.
+4. The lang/country choices are hard-coded to 5 Western locales, but most saved data is for Indian apps (`in` is not offered).
+5. **`data/` (~24 MB) is still tracked in git.** The saved reviews contain real user names and avatar URLs (PII). `.gitignore` ignores new output, but removing the existing files (`git rm -r --cached data/`) is an owner decision. Note that pulling that commit deletes the files from collaborators' working copies.
+6. The PDF font (DejaVu) can't draw emoji or Indic scripts. They're dropped from the PDF only.
+
+Fixed (keep fixed):
+- The dashboard is kept in `st.session_state`, so widget reruns don't wipe it. Keep any new tab or widget inside the session-state render block.
+- TLS verification uses certifi's CA bundle. Never switch back to `_create_unverified_context`.
+- Sentiment `pd.cut` uses `include_lowest=True`, so a score of -1.0 is Negative.
+- The weak keyword "App Review Summary", unused imports, `seaborn`, and the POS-tagger download were removed.
+- `requirements.txt` pins versions verified together on Python 3.13 (`.python-version`).
 
 ## Target structure (move toward this incrementally)
 
@@ -107,7 +113,7 @@ Rules for the refactor:
 
 - **Branches and PRs**: never commit directly to `main`. Use short-lived branches (`feat/…`, `fix/…`, `refactor/…`) and keep each PR to one focused change. Write commit messages in the imperative mood, explaining *why*.
 - **Tests**: use `pytest`. Any change to `analysis.py` or `insights.py` logic comes with tests (write the failing test first for bug fixes). Mock the scraper in tests; tests must never hit the Play Store.
-- **Lint/format**: adopt `ruff` (lint and format). Run `ruff check . && ruff format . && pytest` before you push.
+- **Lint**: run `ruff check . && pytest` before you push. (`ruff format` hasn't been applied to the codebase yet; if you adopt it, do it in its own PR.)
 - **Dependencies**: pin exact versions in `requirements.txt` and add only what you use. When you remove a feature, remove its dependency too.
 - **Config over constants**: thresholds (the ±0.1 sentiment cutoffs), phrase lists and locale lists belong in one clearly named place, not scattered through the UI code.
 - **Performance**: cache expensive pure steps with `st.cache_data` and models/resources with `st.cache_resource`. Avoid per-row `iterrows()` rendering for large review sets; paginate instead.

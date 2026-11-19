@@ -8,9 +8,6 @@ st.set_page_config(
 )
 
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.express as px
 from google_play_scraper import Sort, reviews
 import json
@@ -22,9 +19,8 @@ from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer
 from wordcloud import WordCloud
-import plotly.graph_objects as go
 import ssl
 import certifi
 import anthropic
@@ -36,17 +32,15 @@ from reviewer.pdf_report import build_pdf
 # Pick up ANTHROPIC_API_KEY from a local .env file (gitignored)
 load_dotenv()
 
-# Fix SSL certificate issues
-ssl._create_default_https_context = ssl._create_unverified_context
+# Use certifi's CA bundle for urllib-based downloads (NLTK data, Play Store scraping).
+# Fixes "certificate verify failed" on macOS Python installs without disabling verification.
+ssl._create_default_https_context = lambda *args, **kwargs: ssl.create_default_context(cafile=certifi.where())
 
 # Download required NLTK resources
 @st.cache_resource
 def download_nltk_resources():
-    nltk.download('vader_lexicon')
-    nltk.download('punkt')
-    nltk.download('stopwords')
-    nltk.download('wordnet')
-    nltk.download('averaged_perceptron_tagger')  # For POS tagging
+    for resource in ['vader_lexicon', 'punkt', 'punkt_tab', 'stopwords', 'wordnet']:
+        nltk.download(resource, quiet=True)
 
 download_nltk_resources()
 
@@ -93,7 +87,7 @@ with st.sidebar:
 # Function to scrape reviews
 def scrape_reviews(app_id, count, lang, country, sort_order):
     try:
-        result, continuation_token = reviews(
+        result, _ = reviews(
             app_id,
             lang=lang,
             country=country,
@@ -158,7 +152,8 @@ def analyze_sentiment(reviews_df):
     reviews_df['sentiment'] = pd.cut(
         reviews_df['sentiment_score'],
         bins=[-1, -0.1, 0.1, 1],
-        labels=['Negative', 'Neutral', 'Positive']
+        labels=['Negative', 'Neutral', 'Positive'],
+        include_lowest=True  # so a score of exactly -1.0 is Negative, not NaN
     )
     
     # Add preprocessed text for word frequency analysis
@@ -216,128 +211,6 @@ def detect_feature_requests(reviews_df):
     reviews_df['is_feature_request'] = reviews_df['content'].apply(has_feature_request)
     
     return reviews_df
-
-# Function to generate summary insights
-def generate_insights(df):
-    total_reviews = len(df)
-    
-    # Sentiment breakdown
-    sentiment_counts = df['sentiment'].value_counts()
-    positive_count = sentiment_counts.get('Positive', 0)
-    neutral_count = sentiment_counts.get('Neutral', 0)
-    negative_count = sentiment_counts.get('Negative', 0)
-    
-    positive_percent = (positive_count / total_reviews) * 100 if total_reviews > 0 else 0
-    negative_percent = (negative_count / total_reviews) * 100 if total_reviews > 0 else 0
-    
-    # Average rating
-    avg_rating = df['score'].mean()
-    
-    # Feature requests
-    feature_requests = df[df['is_feature_request']]
-    feature_request_count = len(feature_requests)
-    feature_percent = (feature_request_count / total_reviews) * 100 if total_reviews > 0 else 0
-    
-    # Get top positive aspects (from positive reviews)
-    positive_df = df[df['sentiment'] == 'Positive']
-    # Get top negative aspects (from negative reviews)
-    negative_df = df[df['sentiment'] == 'Negative']
-    
-    # Get top feature requests
-    feature_texts = feature_requests['processed_text'].dropna().tolist()
-    
-    insights = {
-        'total_reviews': total_reviews,
-        'avg_rating': avg_rating,
-        'positive_count': positive_count,
-        'positive_percent': positive_percent,
-        'negative_count': negative_count,
-        'negative_percent': negative_percent,
-        'feature_request_count': feature_request_count,
-        'feature_percent': feature_percent,
-        'positive_df': positive_df,
-        'negative_df': negative_df,
-        'feature_texts': feature_texts
-    }
-    
-    return insights
-
-# Function to extract keywords using TF-IDF
-def extract_keywords(texts, n=10):
-    if not texts or len(texts) == 0:
-        return []
-    
-    # Combine texts into one large document
-    combined_text = ' '.join(texts)
-    
-    # If text is too short, return empty list
-    if len(combined_text.split()) < 3:
-        return []
-    
-    # Define TF-IDF vectorizer
-    tfidf = TfidfVectorizer(
-        max_features=50,
-        stop_words='english',
-        ngram_range=(1, 2),
-        min_df=1
-    )
-    
-    try:
-        # Transform text to TF-IDF feature matrix
-        X = tfidf.fit_transform([combined_text])
-        
-        # Get feature names and scores
-        feature_names = tfidf.get_feature_names_out()
-        scores = X.toarray()[0]
-        
-        # Create DataFrame with feature names and scores
-        keywords_df = pd.DataFrame({
-            'keyword': feature_names,
-            'score': scores
-        })
-        
-        # Sort by score and return top n
-        keywords_df = keywords_df.sort_values('score', ascending=False).head(n)
-        
-        return keywords_df['keyword'].tolist()
-    except:
-        return []
-
-# Function to generate a textual summary of insights
-def generate_summary(insights):
-    # Positive aspects
-    positive_texts = insights['positive_df']['processed_text'].dropna().tolist()
-    positive_keywords = extract_keywords(positive_texts)
-    
-    # Negative aspects
-    negative_texts = insights['negative_df']['processed_text'].dropna().tolist()
-    negative_keywords = extract_keywords(negative_texts)
-    
-    # Feature requests
-    feature_keywords = extract_keywords(insights['feature_texts'])
-    
-    # Build summary
-    summary = f"""
-### App Review Summary
-
-Based on {insights['total_reviews']} reviews, your app has an average rating of {insights['avg_rating']:.1f}/5.0.
-
-**Sentiment Breakdown:**
-- Positive: {insights['positive_count']} reviews ({insights['positive_percent']:.1f}%)
-- Negative: {insights['negative_count']} reviews ({insights['negative_percent']:.1f}%)
-- Feature Requests: {insights['feature_request_count']} reviews ({insights['feature_percent']:.1f}%)
-
-**What Users Like:**
-{', '.join(positive_keywords) if positive_keywords else 'Not enough data to determine'}
-
-**What Users Dislike:**
-{', '.join(negative_keywords) if negative_keywords else 'Not enough data to determine'}
-
-**Feature Requests/Improvements:**
-{', '.join(feature_keywords) if feature_keywords else 'No clear feature requests identified'}
-"""
-    
-    return summary
 
 # Function to get the Anthropic API key from Streamlit secrets, if configured
 def get_api_key():
@@ -461,7 +334,7 @@ def render_ai_report_tab(raw_df, app_id, json_file):
                 'Trend': f"{theme['earlier_share']:.0%} → {theme['recent_share']:.0%}",
                 'Why': p['rationale'],
             })
-    st.dataframe(pd.DataFrame(priority_rows), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(priority_rows), hide_index=True, width="stretch")
     st.caption(f"Trend compares the share of reviews before and after {ov['trend_cutoff']} ({ov['trend_window']}).")
 
     st.markdown("#### Deep dives")
@@ -545,9 +418,6 @@ if 'analysis' in st.session_state:
     with st.expander("Raw Data Preview"):
         st.dataframe(raw_df)
 
-    # Generate insights
-    insights = generate_insights(df)
-
     # Create a summary tab at the top
     st.header("📊 Analysis Dashboard")
     
@@ -580,23 +450,22 @@ if 'analysis' in st.session_state:
                     st.caption(f"“{theme.quote}”")
 
         st.divider()
-        st.subheader("📝 App Review Summary")
-        summary = generate_summary(insights)
-        st.markdown(summary)
-        
+        positive_df = df[df['sentiment'] == 'Positive']
+        negative_df = df[df['sentiment'] == 'Negative']
+
         # Display most representative positive reviews
-        if not insights['positive_df'].empty:
+        if not positive_df.empty:
             st.subheader("Most Representative Positive Reviews")
-            top_positive = insights['positive_df'].sort_values('sentiment_score', ascending=False).head(3)
+            top_positive = positive_df.sort_values('sentiment_score', ascending=False).head(3)
             for _, row in top_positive.iterrows():
                 st.markdown(f"""
                 ⭐ **{row['score']}/5** - "{row['content']}"
                 """)
         
         # Display most representative negative reviews
-        if not insights['negative_df'].empty:
+        if not negative_df.empty:
             st.subheader("Most Representative Negative Reviews")
-            top_negative = insights['negative_df'].sort_values('sentiment_score').head(3)
+            top_negative = negative_df.sort_values('sentiment_score').head(3)
             for _, row in top_negative.iterrows():
                 st.markdown(f"""
                 ⭐ **{row['score']}/5** - "{row['content']}"
@@ -620,7 +489,7 @@ if 'analysis' in st.session_state:
                               labels={'score': 'Rating', 'count': 'Number of Reviews'},
                               color_discrete_sequence=['#3366CC'])
             fig.update_layout(bargap=0.1)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         
         with col2:
             st.subheader("Average Rating Over Time")
@@ -630,7 +499,7 @@ if 'analysis' in st.session_state:
             fig = px.line(avg_rating, x='date', y='score', 
                          labels={'score': 'Average Rating', 'date': 'Date'},
                          markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         
         # Summary statistics
         st.subheader("Summary Statistics")
@@ -651,7 +520,7 @@ if 'analysis' in st.session_state:
             fig = px.pie(sentiment_counts, values='Count', names='Sentiment', 
                         hole=0.4, color='Sentiment',
                         color_discrete_map=colors)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         
         with col2:
             st.subheader("Rating vs Sentiment")
@@ -659,14 +528,14 @@ if 'analysis' in st.session_state:
                         color='sentiment',
                         color_discrete_map=colors,
                         labels={'sentiment': 'Sentiment', 'score': 'Rating'})
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         
         # Sentiment score distribution
         st.subheader("Sentiment Score Distribution")
         fig = px.histogram(df, x='sentiment_score', nbins=20,
                           color_discrete_sequence=['#3366CC'],
                           labels={'sentiment_score': 'Sentiment Score', 'count': 'Number of Reviews'})
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     
     with tab3:
         st.subheader("Word Clouds")
